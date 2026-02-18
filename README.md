@@ -2,7 +2,7 @@
 🚜 ReconTractor: A "Self-Healing" automated WAF detection and advanced reconnaissance suite. Features intelligent dependency management, auto-virtualization for Kali Linux, and a high-signal secret-hunting engine.
 
 # 🚜 ReconTractor (v1.0)
-### Automated WAF Detection & Advanced Reconnaissance Suite
+### Automated WAF Detection & Reconnaissance Suite For Sensitive Data
 **Created By:** Rahul A.K.A SecurityBong
 
 ![Status](https://img.shields.io/badge/Status-Stable-success) ![OS](https://img.shields.io/badge/OS-Linux%20|%20Windows-blue) ![License](https://img.shields.io/badge/License-MIT-green)
