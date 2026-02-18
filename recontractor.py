@@ -75,39 +75,59 @@ def get_go_bin():
     except: pass
     return os.path.join(os.path.expanduser("~"), "go", "bin")
 
+# --- FIXED: TRANSPARENT TOOL SETUP WITH PATH REFRESH ---
 def setup_tools():
     print(f"\n{Colors.BOLD}--- [ SYSTEM PRE-FLIGHT CHECK ] ---{Colors.RESET}")
     go_bin = get_go_bin()
+    
+    # Ensure Go bin is in the script's path for this session
+    if go_bin not in os.environ["PATH"]:
+        os.environ["PATH"] += os.pathsep + go_bin
+
     tools_repo = {
         "httpx": "github.com/projectdiscovery/httpx/cmd/httpx@latest",
         "katana": "github.com/projectdiscovery/katana/cmd/katana@latest",
         "gau": "github.com/lc/gau/v2/cmd/gau@latest",
         "nuclei": "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
     }
+
     for tool, repo in tools_repo.items():
         found_path = None
-        potential_paths = [os.path.join(go_bin, tool), shutil.which(tool), f"/usr/local/bin/{tool}"]
+        # Check Go bin, System Path, and Local Local Bin
+        potential_paths = [os.path.join(go_bin, tool), shutil.which(tool), f"/usr/local/bin/{tool}", f"/usr/bin/{tool}"]
+        
         for p in potential_paths:
             if p and os.path.exists(p):
                 if tool == "httpx":
                     try:
+                        # Verify it's ProjectDiscovery httpx and not Python lib
                         res = subprocess.run([p, "-version"], capture_output=True, text=True, timeout=2)
                         if "projectdiscovery" in res.stdout.lower() or "projectdiscovery" in res.stderr.lower():
                             found_path = p; break
                     except: continue 
-                else: found_path = p; break
+                else:
+                    found_path = p; break
+        
         if found_path:
             CMD_PATHS[tool] = found_path
             print(f" {Colors.GREEN}[FOUND]{Colors.RESET}   {tool.ljust(8)} : {found_path}")
         else:
-            print(f" {Colors.RED}[MISSING]{Colors.RESET} {tool.ljust(8)} : Installing...")
-            try:
-                subprocess.run(["go", "install", repo], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                p = os.path.join(go_bin, tool)
-                if os.path.exists(p):
-                    CMD_PATHS[tool] = p
-                    print(f" {Colors.GREEN}[INSTALLED]{Colors.RESET} {tool.ljust(6)} : {p}")
-            except: pass
+            print(f" {Colors.RED}[MISSING]{Colors.RESET} {tool.ljust(8)} : Attempting Install...")
+            if shutil.which("go"):
+                try:
+                    subprocess.run(["go", "install", repo], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    # Force refresh path check after install
+                    new_p = os.path.join(go_bin, tool)
+                    if os.path.exists(new_p):
+                        CMD_PATHS[tool] = new_p
+                        print(f" {Colors.GREEN}[INSTALLED]{Colors.RESET} {tool.ljust(6)} : {new_p}")
+                    else:
+                        print(f" {Colors.RED}[FAILED]{Colors.RESET}    {tool.ljust(8)} : Binary not found after install.")
+                except:
+                    print(f" {Colors.RED}[FAILED]{Colors.RESET}    {tool.ljust(8)} : Go install command failed.")
+            else:
+                print(f" {Colors.RED}[ERROR]{Colors.RESET}     {tool.ljust(8)} : Go not found on system.")
+
     print(f"{Colors.BOLD}---------------------------------------{Colors.RESET}")
 
 def run_tool_with_status(cmd, tool_name, output_file=None):
@@ -117,9 +137,14 @@ def run_tool_with_status(cmd, tool_name, output_file=None):
             outfile = open(output_file, "a")
             stdout_dest = outfile
         else: stdout_dest = subprocess.PIPE
+        
+        # We must use absolute paths from CMD_PATHS
+        tool_bin = CMD_PATHS.get(tool_name.lower())
+        if tool_bin: cmd[0] = tool_bin
+
         process = subprocess.Popen(cmd, stdout=stdout_dest, stderr=subprocess.PIPE, text=True)
         def monitor(p, name, out_f):
-            delay = 30 # Initial delay
+            delay = 30 
             while p.poll() is None:
                 time.sleep(delay)
                 if p.poll() is None:
@@ -129,7 +154,7 @@ def run_tool_with_status(cmd, tool_name, output_file=None):
                             with open(out_f, 'r', errors='ignore') as f: count = sum(1 for _ in f)
                         except: pass
                     log(f"{name} is processing... Found {count} items. (Next update in {delay+15}s)", "STATUS")
-                    delay += 15 # Incremental delay to prevent spam
+                    delay += 15 
         t = threading.Thread(target=monitor, args=(process, tool_name, output_file))
         t.daemon = True; t.start(); process.wait()
         return True
@@ -182,16 +207,22 @@ def run_recon(target):
     if CMD_PATHS["katana"]:
         log(f"{CMD_PATHS['katana']} (Crawling)", "TOOL")
         run_tool_with_status([CMD_PATHS["katana"], "-u", target, "-d", "3", "-jc", "-silent"], "Katana", raw_file)
+    else: log("Katana not found. Skipping crawl.", "ERROR")
+
     if CMD_PATHS["gau"]:
         log(f"{CMD_PATHS['gau']} (Archiving)", "TOOL")
         run_tool_with_status([CMD_PATHS["gau"], domain, "--threads", "10"], "Gau", raw_file)
+    else: log("Gau not found. Skipping archive.", "ERROR")
 
     log("Deduplicating fetched URLs...", "INFO")
-    if os.path.exists(raw_file):
+    if os.path.exists(raw_file) and os.path.getsize(raw_file) > 0:
         with open(raw_file, 'r') as f: lines = f.readlines()
         unique = set(l.strip() for l in lines if l.strip() and l.startswith("http"))
         with open(raw_file, 'w') as f: f.write('\n'.join(unique))
-    else: log("No URLs found.", "ERROR"); sys.exit(0)
+        log(f"Unique URLs found: {len(unique)}", "SUCCESS")
+    else: 
+        log("No URLs found. Check if Katana/Gau are installed correctly.", "ERROR")
+        sys.exit(0)
 
     log("Filtering for ALIVE endpoints...", "TOOL")
     alive_count = 0
@@ -199,6 +230,7 @@ def run_recon(target):
         run_tool_with_status([CMD_PATHS["httpx"], "-l", raw_file, "-mc", "200,301,302,403,401", "-o", alive_file, "-silent"], "Httpx", alive_file)
         if os.path.exists(alive_file):
             with open(alive_file, 'r') as f: alive_count = sum(1 for _ in f)
+    
     if alive_count == 0: alive_count = check_alive_python(raw_file, alive_file)
     if alive_count == 0: log("0 Alive endpoints found.", "ERROR"); sys.exit(0)
     log(f"Found {alive_count} Alive endpoints.", "SUCCESS")
@@ -246,7 +278,7 @@ def run_recon(target):
                     time.sleep(nuc_delay)
                     if p.poll() is None:
                         log(f"Nuclei scan still in progress... (Next update in {nuc_delay+20}s)", "STATUS")
-                        nuc_delay += 20 # Incremental delay to reduce spam
+                        nuc_delay += 20 
             t_nuc = threading.Thread(target=nuc_monitor, args=(nuc,), daemon=True)
             t_nuc.start()
             for line in nuc.stdout:
@@ -278,6 +310,12 @@ if __name__ == "__main__":
     =======================================================
     {Colors.RESET}""")
     setup_tools()
+    
+    # SAFETY LOCK: If tools are missing, remind user how to fix
+    if not any(CMD_PATHS.values()):
+        log("No tools available. Please ensure Go is installed and binaries are in GOPATH/bin.", "ERROR")
+        sys.exit(1)
+
     try:
         target = input("\n Enter Target: ").strip()
         if target:
