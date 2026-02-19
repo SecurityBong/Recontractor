@@ -75,59 +75,43 @@ def get_go_bin():
     except: pass
     return os.path.join(os.path.expanduser("~"), "go", "bin")
 
-# --- FIXED: TRANSPARENT TOOL SETUP WITH PATH REFRESH ---
 def setup_tools():
     print(f"\n{Colors.BOLD}--- [ SYSTEM PRE-FLIGHT CHECK ] ---{Colors.RESET}")
     go_bin = get_go_bin()
-    
-    # Ensure Go bin is in the script's path for this session
     if go_bin not in os.environ["PATH"]:
         os.environ["PATH"] += os.pathsep + go_bin
-
+        
     tools_repo = {
         "httpx": "github.com/projectdiscovery/httpx/cmd/httpx@latest",
         "katana": "github.com/projectdiscovery/katana/cmd/katana@latest",
         "gau": "github.com/lc/gau/v2/cmd/gau@latest",
         "nuclei": "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
     }
-
     for tool, repo in tools_repo.items():
         found_path = None
-        # Check Go bin, System Path, and Local Local Bin
         potential_paths = [os.path.join(go_bin, tool), shutil.which(tool), f"/usr/local/bin/{tool}", f"/usr/bin/{tool}"]
-        
         for p in potential_paths:
             if p and os.path.exists(p):
                 if tool == "httpx":
                     try:
-                        # Verify it's ProjectDiscovery httpx and not Python lib
                         res = subprocess.run([p, "-version"], capture_output=True, text=True, timeout=2)
                         if "projectdiscovery" in res.stdout.lower() or "projectdiscovery" in res.stderr.lower():
                             found_path = p; break
                     except: continue 
-                else:
-                    found_path = p; break
+                else: found_path = p; break
         
         if found_path:
             CMD_PATHS[tool] = found_path
             print(f" {Colors.GREEN}[FOUND]{Colors.RESET}   {tool.ljust(8)} : {found_path}")
         else:
-            print(f" {Colors.RED}[MISSING]{Colors.RESET} {tool.ljust(8)} : Attempting Install...")
-            if shutil.which("go"):
-                try:
-                    subprocess.run(["go", "install", repo], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    # Force refresh path check after install
-                    new_p = os.path.join(go_bin, tool)
-                    if os.path.exists(new_p):
-                        CMD_PATHS[tool] = new_p
-                        print(f" {Colors.GREEN}[INSTALLED]{Colors.RESET} {tool.ljust(6)} : {new_p}")
-                    else:
-                        print(f" {Colors.RED}[FAILED]{Colors.RESET}    {tool.ljust(8)} : Binary not found after install.")
-                except:
-                    print(f" {Colors.RED}[FAILED]{Colors.RESET}    {tool.ljust(8)} : Go install command failed.")
-            else:
-                print(f" {Colors.RED}[ERROR]{Colors.RESET}     {tool.ljust(8)} : Go not found on system.")
-
+            print(f" {Colors.RED}[MISSING]{Colors.RESET} {tool.ljust(8)} : Installing...")
+            try:
+                subprocess.run(["go", "install", repo], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                p = os.path.join(go_bin, tool)
+                if os.path.exists(p):
+                    CMD_PATHS[tool] = p
+                    print(f" {Colors.GREEN}[INSTALLED]{Colors.RESET} {tool.ljust(6)} : {p}")
+            except: pass
     print(f"{Colors.BOLD}---------------------------------------{Colors.RESET}")
 
 def run_tool_with_status(cmd, tool_name, output_file=None):
@@ -137,14 +121,9 @@ def run_tool_with_status(cmd, tool_name, output_file=None):
             outfile = open(output_file, "a")
             stdout_dest = outfile
         else: stdout_dest = subprocess.PIPE
-        
-        # We must use absolute paths from CMD_PATHS
-        tool_bin = CMD_PATHS.get(tool_name.lower())
-        if tool_bin: cmd[0] = tool_bin
-
         process = subprocess.Popen(cmd, stdout=stdout_dest, stderr=subprocess.PIPE, text=True)
         def monitor(p, name, out_f):
-            delay = 30 
+            delay = 30
             while p.poll() is None:
                 time.sleep(delay)
                 if p.poll() is None:
@@ -153,8 +132,8 @@ def run_tool_with_status(cmd, tool_name, output_file=None):
                         try:
                             with open(out_f, 'r', errors='ignore') as f: count = sum(1 for _ in f)
                         except: pass
-                    log(f"{name} is processing... Found {count} items. (Next update in {delay+15}s)", "STATUS")
-                    delay += 15 
+                    log(f"{name} working... Found {count} items. (Next update in {delay+15}s)", "STATUS")
+                    delay += 15
         t = threading.Thread(target=monitor, args=(process, tool_name, output_file))
         t.daemon = True; t.start(); process.wait()
         return True
@@ -207,22 +186,16 @@ def run_recon(target):
     if CMD_PATHS["katana"]:
         log(f"{CMD_PATHS['katana']} (Crawling)", "TOOL")
         run_tool_with_status([CMD_PATHS["katana"], "-u", target, "-d", "3", "-jc", "-silent"], "Katana", raw_file)
-    else: log("Katana not found. Skipping crawl.", "ERROR")
-
     if CMD_PATHS["gau"]:
         log(f"{CMD_PATHS['gau']} (Archiving)", "TOOL")
         run_tool_with_status([CMD_PATHS["gau"], domain, "--threads", "10"], "Gau", raw_file)
-    else: log("Gau not found. Skipping archive.", "ERROR")
 
     log("Deduplicating fetched URLs...", "INFO")
-    if os.path.exists(raw_file) and os.path.getsize(raw_file) > 0:
+    if os.path.exists(raw_file):
         with open(raw_file, 'r') as f: lines = f.readlines()
         unique = set(l.strip() for l in lines if l.strip() and l.startswith("http"))
         with open(raw_file, 'w') as f: f.write('\n'.join(unique))
-        log(f"Unique URLs found: {len(unique)}", "SUCCESS")
-    else: 
-        log("No URLs found. Check if Katana/Gau are installed correctly.", "ERROR")
-        sys.exit(0)
+    else: log("No URLs found.", "ERROR"); sys.exit(0)
 
     log("Filtering for ALIVE endpoints...", "TOOL")
     alive_count = 0
@@ -230,9 +203,8 @@ def run_recon(target):
         run_tool_with_status([CMD_PATHS["httpx"], "-l", raw_file, "-mc", "200,301,302,403,401", "-o", alive_file, "-silent"], "Httpx", alive_file)
         if os.path.exists(alive_file):
             with open(alive_file, 'r') as f: alive_count = sum(1 for _ in f)
-    
     if alive_count == 0: alive_count = check_alive_python(raw_file, alive_file)
-    if alive_count == 0: log("0 Alive endpoints found.", "ERROR"); sys.exit(0)
+    if alive_count == 0: log("0 Alive endpoints found. Verify target availability.", "ERROR"); sys.exit(0)
     log(f"Found {alive_count} Alive endpoints.", "SUCCESS")
 
     log("Smart Grep: Searching for Sensitive Exposure...", "STEP")
@@ -242,88 +214,3 @@ def run_recon(target):
         r"alias_pass|alicloud_access_key|amazon_secret_access_key|amazonaws|ansible_vault_password|"
         r"aos_key|api_key|api_key_secret|api_key_sid|api_secret|api\.googlemaps AIza|apidocs|apikey|"
         r"apiSecret|app_debug|app_id|app_key|app_log_level|app_secret|appkey|appkeysecret|"
-        r"application_key|appsecret|appspot|auth_token|authorizationToken|authsecret|aws_access|"
-        r"aws_access_key_id|aws_bucket|aws_key|aws_secret|aws_secret_key|aws_token|AWSSecretKey|"
-        r"b2_app_key|bashrc password|bintray_apikey|bintray_gpg_password|bintray_key|bintraykey|"
-        r"bluemix_api_key|bluemix_pass|browserstack_access_key|bucket_password|bucketeer_aws_access_key_id|"
-        r"bucketeer_aws_secret_access_key|built_branch_deploy_key|bx_password|cache_driver|cache_s3_secret_key|"
-        r"cattle_access_key|cattle_secret_key|certificate_password|ci_deploy_password|client_secret|"
-        r"client_zpk_secret_key|clojars_password|cloud_api_key|cloud_watch_aws_access_key|cloudant_password|"
-        r"cloudflare_api_key|cloudflare_auth_key|cloudinary_api_secret|cloudinary_name|codecov_token|"
-        r"config|conn\.login|connectionstring|consumer_key|consumer_secret|credentials|cypress_record_key|"
-        r"database_password|database_schema_test|datadog_api_key|datadog_app_key|db_password|db_server|"
-        r"db_username|dbpasswd|dbpassword|dbuser|deploy_password|digitalocean_ssh_key_body|"
-        r"digitalocean_ssh_key_ids|docker_hub_password|docker_key|docker_pass|docker_passwd|"
-        r"docker_password|dockerhub_password|dockerhubpassword|dot-files|dotfiles|droplet_travis_password|"
-        r"dynamoaccesskeyid|dynamosecretaccesskey|elastica_host|elastica_port|elasticsearch_password|"
-        r"encryption_key|encryption_password|env\.heroku_api_key|env\.sonatype_password|"
-        r"eureka\.awssecretkey)[a-z0-9_.,-]{0,25})[:<>=|]{1,2}.{0,5}['\"]([0-9A-Za-z\-_=]{8,64})['\"]"
-    )
-    with open(alive_file, 'r') as f:
-        for url in f:
-            u = url.strip()
-            if ext_pattern.search(u): log(f"Juicy File Extension: {u}", "CORE")
-            if secret_pattern.search(u): log(f"High-Signal Secret Found: {u}", "CORE")
-
-    if CMD_PATHS["nuclei"]:
-        log(f"{CMD_PATHS['nuclei']} (Scanning - Advanced)", "TOOL")
-        try:
-            nuc = subprocess.Popen(
-                [CMD_PATHS["nuclei"], "-l", alive_file, "-s", "medium,high,critical", "-no-color", "-silent"], 
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, universal_newlines=True
-            )
-            def nuc_monitor(p):
-                nuc_delay = 30
-                while p.poll() is None:
-                    time.sleep(nuc_delay)
-                    if p.poll() is None:
-                        log(f"Nuclei scan still in progress... (Next update in {nuc_delay+20}s)", "STATUS")
-                        nuc_delay += 20 
-            t_nuc = threading.Thread(target=nuc_monitor, args=(nuc,), daemon=True)
-            t_nuc.start()
-            for line in nuc.stdout:
-                if "[" in line and "]" in line and not "WRN" in line: log(line.strip(), "PLUS")
-            nuc.wait()
-        except: pass
-    log(f"Complete. Results in: {workspace}/", "SUCCESS"); sys.exit(0)
-
-def run_waf_check(target):
-    log(f"Analyzing {target}", "STEP")
-    base = native_request(target)
-    if not base: log("Target unreachable.", "ERROR"); return
-    waf = False
-    if "cloudflare" in base["headers"]: log("Cloudflare Detected", "WAF"); waf = True
-    for load in ["<script>alert(1)</script>", "' OR 1=1 --"]:
-        res = native_request(target, load)
-        if res and res["code"] in [403, 406]: log(f"Behavioral Block ({res['code']})", "WAF"); waf = True; break
-    print(f"\nVERDICT: {'WAF DETECTED' if waf else 'NO WAF DETECTED'}\n")
-    sys.exit(0)
-
-if __name__ == "__main__":
-    ensure_virtual_env()
-    print(rf"""{Colors.BOLD}{Colors.CYAN}
-    =======================================================
-          R E C O N - T R A C T O R   (v{VERSION})
-    =======================================================
-    [+] {DESC}
-    [+] Created By: {AUTHOR}
-    =======================================================
-    {Colors.RESET}""")
-    setup_tools()
-    
-    # SAFETY LOCK: If tools are missing, remind user how to fix
-    if not any(CMD_PATHS.values()):
-        log("No tools available. Please ensure Go is installed and binaries are in GOPATH/bin.", "ERROR")
-        sys.exit(1)
-
-    try:
-        target = input("\n Enter Target: ").strip()
-        if target:
-            if not target.startswith("http"): target = f"http://{target}"
-            if native_request(target):
-                print(f"\n [1] WAF DETECT\n [2] FULL RECON")
-                c = input(f"\n Choice: ").strip()
-                if c == "1": run_waf_check(target)
-                elif c == "2": run_recon(target)
-            else: log("Target unreachable.", "ERROR")
-    except KeyboardInterrupt: sys.exit(0)
