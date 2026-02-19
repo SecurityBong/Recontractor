@@ -209,8 +209,92 @@ def run_recon(target):
 
     log("Smart Grep: Searching for Sensitive Exposure...", "STEP")
     ext_pattern = re.compile(r"\.(zip|rar|tar|gz|config|log|bak|backup|java|old|xlsx|json|pdf|doc|docx|pptx|csv|htaccess|7z)$", re.IGNORECASE)
+    
+    # --- BULLETPROOF TRIPLE QUOTES FIX ---
     secret_pattern = re.compile(
         r"(?i)(?:(?:access_key|access_token|admin_pass|admin_user|algolia_admin_key|algolia_api_key|"
         r"alias_pass|alicloud_access_key|amazon_secret_access_key|amazonaws|ansible_vault_password|"
         r"aos_key|api_key|api_key_secret|api_key_sid|api_secret|api\.googlemaps AIza|apidocs|apikey|"
         r"apiSecret|app_debug|app_id|app_key|app_log_level|app_secret|appkey|appkeysecret|"
+        r"application_key|appsecret|appspot|auth_token|authorizationToken|authsecret|aws_access|"
+        r"aws_access_key_id|aws_bucket|aws_key|aws_secret|aws_secret_key|aws_token|AWSSecretKey|"
+        r"b2_app_key|bashrc password|bintray_apikey|bintray_gpg_password|bintray_key|bintraykey|"
+        r"bluemix_api_key|bluemix_pass|browserstack_access_key|bucket_password|bucketeer_aws_access_key_id|"
+        r"bucketeer_aws_secret_access_key|built_branch_deploy_key|bx_password|cache_driver|cache_s3_secret_key|"
+        r"cattle_access_key|cattle_secret_key|certificate_password|ci_deploy_password|client_secret|"
+        r"client_zpk_secret_key|clojars_password|cloud_api_key|cloud_watch_aws_access_key|cloudant_password|"
+        r"cloudflare_api_key|cloudflare_auth_key|cloudinary_api_secret|cloudinary_name|codecov_token|"
+        r"config|conn\.login|connectionstring|consumer_key|consumer_secret|credentials|cypress_record_key|"
+        r"database_password|database_schema_test|datadog_api_key|datadog_app_key|db_password|db_server|"
+        r"db_username|dbpasswd|dbpassword|dbuser|deploy_password|digitalocean_ssh_key_body|"
+        r"digitalocean_ssh_key_ids|docker_hub_password|docker_key|docker_pass|docker_passwd|"
+        r"docker_password|dockerhub_password|dockerhubpassword|dot-files|dotfiles|droplet_travis_password|"
+        r"dynamoaccesskeyid|dynamosecretaccesskey|elastica_host|elastica_port|elasticsearch_password|"
+        r"encryption_key|encryption_password|env\.heroku_api_key|env\.sonatype_password|"
+        r"eureka\.awssecretkey)[a-z0-9_.,-]{0,25})[:<>=|]{1,2}.{0,5}"
+        r"""['"]([0-9A-Za-z\-_=]{8,64})['"]"""
+    )
+    
+    with open(alive_file, 'r') as f:
+        for url in f:
+            u = url.strip()
+            if ext_pattern.search(u): log(f"Juicy File Extension: {u}", "CORE")
+            if secret_pattern.search(u): log(f"High-Signal Secret Found: {u}", "CORE")
+
+    if CMD_PATHS["nuclei"]:
+        log(f"{CMD_PATHS['nuclei']} (Scanning - Advanced)", "TOOL")
+        try:
+            subprocess.run([CMD_PATHS["nuclei"], "-ut"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            nuc = subprocess.Popen(
+                [CMD_PATHS["nuclei"], "-l", alive_file, "-as", "-s", "low,medium,high,critical", "-no-color", "-silent", "-c", "50"], 
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, universal_newlines=True
+            )
+            def nuc_monitor(p):
+                nuc_delay = 30
+                while p.poll() is None:
+                    time.sleep(nuc_delay)
+                    if p.poll() is None:
+                        log(f"Nuclei scan still in progress... (Next update in {nuc_delay+20}s)", "STATUS")
+                        nuc_delay += 20 
+            t_nuc = threading.Thread(target=nuc_monitor, args=(nuc,), daemon=True)
+            t_nuc.start()
+            for line in nuc.stdout:
+                if "[" in line and "]" in line and not "WRN" in line: log(line.strip(), "PLUS")
+            nuc.wait()
+        except: pass
+    log(f"Complete. Results in: {workspace}/", "SUCCESS"); sys.exit(0)
+
+def run_waf_check(target):
+    log(f"Analyzing {target}", "STEP")
+    base = native_request(target)
+    if not base: log("Target unreachable.", "ERROR"); return
+    waf = False
+    if "cloudflare" in base["headers"]: log("Cloudflare Detected", "WAF"); waf = True
+    for load in ["<script>alert(1)</script>", "' OR 1=1 --"]:
+        res = native_request(target, load)
+        if res and res["code"] in [403, 406]: log(f"Behavioral Block ({res['code']})", "WAF"); waf = True; break
+    print(f"\nVERDICT: {'WAF DETECTED' if waf else 'NO WAF DETECTED'}\n")
+    sys.exit(0)
+
+if __name__ == "__main__":
+    ensure_virtual_env()
+    print(rf"""{Colors.BOLD}{Colors.CYAN}
+    =======================================================
+          R E C O N - T R A C T O R   (v{VERSION})
+    =======================================================
+    [+] {DESC}
+    [+] Created By: {AUTHOR}
+    =======================================================
+    {Colors.RESET}""")
+    setup_tools()
+    try:
+        target = input("\n Enter Target: ").strip()
+        if target:
+            if not target.startswith("http"): target = f"http://{target}"
+            if native_request(target):
+                print(f"\n [1] WAF DETECT\n [2] FULL RECON")
+                c = input(f"\n Choice: ").strip()
+                if c == "1": run_waf_check(target)
+                elif c == "2": run_recon(target)
+            else: log("Target unreachable.", "ERROR")
+    except KeyboardInterrupt: sys.exit(0)
