@@ -84,7 +84,6 @@ def get_go_bin():
 def setup_tools():
     print(f"\n{Colors.BOLD}--- [ SYSTEM PRE-FLIGHT CHECK ] ---{Colors.RESET}")
     
-    # --- OS FINGERPRINTING FOR SMART ASSISTANCE ---
     os_id = platform.system()
     pkg_mgr = ""
     if os_id == "Linux" and os.path.exists("/etc/os-release"):
@@ -112,16 +111,24 @@ def setup_tools():
     
     for tool, repo in tools_repo.items():
         found_path = None
-        potential_paths = [os.path.join(go_bin, tool), shutil.which(tool), f"/usr/local/bin/{tool}", f"/usr/bin/{tool}"]
-        for p in potential_paths:
-            if p and os.path.exists(p):
-                if tool == "httpx":
-                    try:
-                        res = subprocess.run([p, "-version"], capture_output=True, text=True, timeout=2)
-                        if "projectdiscovery" in res.stdout.lower() or "projectdiscovery" in res.stderr.lower():
-                            found_path = p; break
-                    except: continue 
-                else: found_path = p; break
+        go_exact_path = os.path.join(go_bin, tool)
+        
+        # 1. ABSOLUTE TRUST: If it is in the Go Bin, it is 100% correct. No timeout-prone checks needed.
+        if os.path.exists(go_exact_path):
+            found_path = go_exact_path
+        else:
+            # 2. STRICT VALIDATION: Only run version checks if we are relying on System PATH.
+            potential_paths = [shutil.which(tool), f"/usr/local/bin/{tool}", f"/usr/bin/{tool}"]
+            for p in potential_paths:
+                if p and os.path.exists(p):
+                    if tool == "httpx":
+                        try:
+                            # Increased timeout just in case it's on a system path
+                            res = subprocess.run([p, "-version"], capture_output=True, text=True, timeout=3)
+                            if "projectdiscovery" in res.stdout.lower() or "projectdiscovery" in res.stderr.lower() or "httpx" in res.stdout.lower():
+                                found_path = p; break
+                        except: continue 
+                    else: found_path = p; break
         
         if found_path:
             CMD_PATHS[tool] = found_path
@@ -244,13 +251,13 @@ def run_recon(target):
         run_tool_with_status([CMD_PATHS["httpx"], "-l", raw_file, "-mc", "200,301,302,403,401", "-o", alive_file, "-silent"], "Httpx", alive_file)
         if os.path.exists(alive_file):
             with open(alive_file, 'r') as f: alive_count = sum(1 for _ in f)
+    
     if alive_count == 0: alive_count = check_alive_python(raw_file, alive_file)
     if alive_count == 0: log("0 Alive endpoints found. Verify target availability.", "ERROR"); sys.exit(0)
     log(f"Found {alive_count} Alive endpoints.", "SUCCESS")
 
     log("Smart Grep: Searching for Sensitive Exposure...", "STEP")
     ext_pattern = re.compile(r"\.(zip|rar|tar|gz|config|log|bak|backup|java|old|xlsx|json|pdf|doc|docx|pptx|csv|htaccess|7z)$", re.IGNORECASE)
-    
     secret_pattern = re.compile(
         r"(?i)(?:(?:access_key|access_token|admin_pass|admin_user|algolia_admin_key|algolia_api_key|"
         r"alias_pass|alicloud_access_key|amazon_secret_access_key|amazonaws|ansible_vault_password|"
@@ -329,7 +336,7 @@ if __name__ == "__main__":
     setup_tools()
     
     if not any(CMD_PATHS.values()):
-        log("No tools available. Please ensure Go is installed.", "ERROR")
+        log("No tools available. Please ensure Go is installed and binaries are in GOPATH/bin.", "ERROR")
         sys.exit(1)
 
     try:
