@@ -113,17 +113,14 @@ def setup_tools():
         found_path = None
         go_exact_path = os.path.join(go_bin, tool)
         
-        # 1. ABSOLUTE TRUST: If it is in the Go Bin, it is 100% correct. No timeout-prone checks needed.
         if os.path.exists(go_exact_path):
             found_path = go_exact_path
         else:
-            # 2. STRICT VALIDATION: Only run version checks if we are relying on System PATH.
             potential_paths = [shutil.which(tool), f"/usr/local/bin/{tool}", f"/usr/bin/{tool}"]
             for p in potential_paths:
                 if p and os.path.exists(p):
                     if tool == "httpx":
                         try:
-                            # Increased timeout just in case it's on a system path
                             res = subprocess.run([p, "-version"], capture_output=True, text=True, timeout=3)
                             if "projectdiscovery" in res.stdout.lower() or "projectdiscovery" in res.stderr.lower() or "httpx" in res.stdout.lower():
                                 found_path = p; break
@@ -258,6 +255,7 @@ def run_recon(target):
 
     log("Smart Grep: Searching for Sensitive Exposure...", "STEP")
     ext_pattern = re.compile(r"\.(zip|rar|tar|gz|config|log|bak|backup|java|old|xlsx|json|pdf|doc|docx|pptx|csv|htaccess|7z)$", re.IGNORECASE)
+    
     secret_pattern = re.compile(
         r"(?i)(?:(?:access_key|access_token|admin_pass|admin_user|algolia_admin_key|algolia_api_key|"
         r"alias_pass|alicloud_access_key|amazon_secret_access_key|amazonaws|ansible_vault_password|"
@@ -291,9 +289,12 @@ def run_recon(target):
     if CMD_PATHS["nuclei"]:
         log(f"{CMD_PATHS['nuclei']} (Scanning - Advanced)", "TOOL")
         try:
+            # Update templates silently before running
             subprocess.run([CMD_PATHS["nuclei"], "-ut"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            # REMOVED "-as" so Nuclei runs ALL matched templates, finding everything on test/vulnerable apps
             nuc = subprocess.Popen(
-                [CMD_PATHS["nuclei"], "-l", alive_file, "-as", "-s", "low,medium,high,critical", "-no-color", "-silent", "-c", "50"], 
+                [CMD_PATHS["nuclei"], "-l", alive_file, "-s", "low,medium,high,critical", "-no-color", "-silent", "-c", "50"], 
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, universal_newlines=True
             )
             def nuc_monitor(p):
