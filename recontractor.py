@@ -12,6 +12,8 @@ import threading
 import time
 import venv
 import signal
+import contextlib
+import io
 from datetime import datetime
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -63,10 +65,14 @@ def ensure_virtual_env():
     is_venv = (sys.prefix != sys.base_prefix)
     if not is_venv and platform.system() == "Linux":
         if not os.path.exists("recon_env"):
-            try: venv.create("recon_env", with_pip=True)
+            try: 
+                with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                    venv.create("recon_env", with_pip=False)
             except: pass
         python_bin = os.path.join(os.getcwd(), "recon_env", "bin", "python3")
-        if os.path.exists(python_bin): os.execv(python_bin, [python_bin] + sys.argv)
+        if os.path.exists(python_bin): 
+            try: os.execv(python_bin, [python_bin] + sys.argv)
+            except: pass
 
 def get_go_bin():
     try:
@@ -77,6 +83,22 @@ def get_go_bin():
 
 def setup_tools():
     print(f"\n{Colors.BOLD}--- [ SYSTEM PRE-FLIGHT CHECK ] ---{Colors.RESET}")
+    
+    # --- OS FINGERPRINTING FOR SMART ASSISTANCE ---
+    os_id = platform.system()
+    pkg_mgr = ""
+    if os_id == "Linux" and os.path.exists("/etc/os-release"):
+        try:
+            with open("/etc/os-release") as f:
+                content = f.read().lower()
+                if "ubuntu" in content: os_id = "Ubuntu"; pkg_mgr = "sudo apt install golang"
+                elif "kali" in content: os_id = "Kali Linux"; pkg_mgr = "sudo apt install golang"
+                elif "debian" in content: os_id = "Debian"; pkg_mgr = "sudo apt install golang"
+                elif "arch" in content: os_id = "Arch Linux"; pkg_mgr = "sudo pacman -S go"
+                elif "fedora" in content: os_id = "Fedora"; pkg_mgr = "sudo dnf install golang"
+        except: pass
+    print(f" {Colors.CYAN}[OS DETECT]{Colors.RESET} Platform: {os_id}")
+
     go_bin = get_go_bin()
     if go_bin not in os.environ["PATH"]:
         os.environ["PATH"] += os.pathsep + go_bin
@@ -87,6 +109,7 @@ def setup_tools():
         "gau": "github.com/lc/gau/v2/cmd/gau@latest",
         "nuclei": "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
     }
+    
     for tool, repo in tools_repo.items():
         found_path = None
         potential_paths = [os.path.join(go_bin, tool), shutil.which(tool), f"/usr/local/bin/{tool}", f"/usr/bin/{tool}"]
@@ -105,13 +128,21 @@ def setup_tools():
             print(f" {Colors.GREEN}[FOUND]{Colors.RESET}   {tool.ljust(8)} : {found_path}")
         else:
             print(f" {Colors.RED}[MISSING]{Colors.RESET} {tool.ljust(8)} : Installing...")
-            try:
-                subprocess.run(["go", "install", repo], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                p = os.path.join(go_bin, tool)
-                if os.path.exists(p):
-                    CMD_PATHS[tool] = p
-                    print(f" {Colors.GREEN}[INSTALLED]{Colors.RESET} {tool.ljust(6)} : {p}")
-            except: pass
+            if shutil.which("go"):
+                try:
+                    subprocess.run(["go", "install", repo], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    p = os.path.join(go_bin, tool)
+                    if os.path.exists(p):
+                        CMD_PATHS[tool] = p
+                        print(f" {Colors.GREEN}[INSTALLED]{Colors.RESET} {tool.ljust(6)} : {p}")
+                    else:
+                        print(f" {Colors.RED}[FAILED]{Colors.RESET}    {tool.ljust(8)} : Binary not found after install.")
+                except:
+                    print(f" {Colors.RED}[FAILED]{Colors.RESET}    {tool.ljust(8)} : Go install command failed.")
+            else:
+                print(f" {Colors.RED}[ERROR]{Colors.RESET}     {tool.ljust(8)} : Go not found on system.")
+                if pkg_mgr: print(f" {Colors.YELLOW}[TIP]{Colors.RESET}       Run '{pkg_mgr}' to install Go.")
+
     print(f"{Colors.BOLD}---------------------------------------{Colors.RESET}")
 
 def run_tool_with_status(cmd, tool_name, output_file=None):
@@ -121,6 +152,10 @@ def run_tool_with_status(cmd, tool_name, output_file=None):
             outfile = open(output_file, "a")
             stdout_dest = outfile
         else: stdout_dest = subprocess.PIPE
+        
+        tool_bin = CMD_PATHS.get(tool_name.lower())
+        if tool_bin: cmd[0] = tool_bin
+
         process = subprocess.Popen(cmd, stdout=stdout_dest, stderr=subprocess.PIPE, text=True)
         def monitor(p, name, out_f):
             delay = 30
@@ -132,7 +167,7 @@ def run_tool_with_status(cmd, tool_name, output_file=None):
                         try:
                             with open(out_f, 'r', errors='ignore') as f: count = sum(1 for _ in f)
                         except: pass
-                    log(f"{name} working... Found {count} items. (Next update in {delay+15}s)", "STATUS")
+                    log(f"{name} is processing... Found {count} items. (Next update in {delay+15}s)", "STATUS")
                     delay += 15
         t = threading.Thread(target=monitor, args=(process, tool_name, output_file))
         t.daemon = True; t.start(); process.wait()
@@ -186,16 +221,22 @@ def run_recon(target):
     if CMD_PATHS["katana"]:
         log(f"{CMD_PATHS['katana']} (Crawling)", "TOOL")
         run_tool_with_status([CMD_PATHS["katana"], "-u", target, "-d", "3", "-jc", "-silent"], "Katana", raw_file)
+    else: log("Katana not found. Skipping crawl.", "ERROR")
+
     if CMD_PATHS["gau"]:
         log(f"{CMD_PATHS['gau']} (Archiving)", "TOOL")
         run_tool_with_status([CMD_PATHS["gau"], domain, "--threads", "10"], "Gau", raw_file)
+    else: log("Gau not found. Skipping archive.", "ERROR")
 
     log("Deduplicating fetched URLs...", "INFO")
-    if os.path.exists(raw_file):
+    if os.path.exists(raw_file) and os.path.getsize(raw_file) > 0:
         with open(raw_file, 'r') as f: lines = f.readlines()
         unique = set(l.strip() for l in lines if l.strip() and l.startswith("http"))
         with open(raw_file, 'w') as f: f.write('\n'.join(unique))
-    else: log("No URLs found.", "ERROR"); sys.exit(0)
+        log(f"Unique URLs found: {len(unique)}", "SUCCESS")
+    else: 
+        log("No URLs found. Check if Katana/Gau are installed correctly.", "ERROR")
+        sys.exit(0)
 
     log("Filtering for ALIVE endpoints...", "TOOL")
     alive_count = 0
@@ -210,7 +251,6 @@ def run_recon(target):
     log("Smart Grep: Searching for Sensitive Exposure...", "STEP")
     ext_pattern = re.compile(r"\.(zip|rar|tar|gz|config|log|bak|backup|java|old|xlsx|json|pdf|doc|docx|pptx|csv|htaccess|7z)$", re.IGNORECASE)
     
-    # --- BULLETPROOF TRIPLE QUOTES FIX ---
     secret_pattern = re.compile(
         r"(?i)(?:(?:access_key|access_token|admin_pass|admin_user|algolia_admin_key|algolia_api_key|"
         r"alias_pass|alicloud_access_key|amazon_secret_access_key|amazonaws|ansible_vault_password|"
@@ -287,6 +327,11 @@ if __name__ == "__main__":
     =======================================================
     {Colors.RESET}""")
     setup_tools()
+    
+    if not any(CMD_PATHS.values()):
+        log("No tools available. Please ensure Go is installed.", "ERROR")
+        sys.exit(1)
+
     try:
         target = input("\n Enter Target: ").strip()
         if target:
