@@ -84,4 +84,11 @@ Accidentally hit Ctrl+C? ReconTractor catches the interrupt signal and asks for 
 
 ⚠️ Disclaimer
 This tool is for educational and authorized security testing only. The creator, Rahul A.K.A SecurityBong, is not responsible for any misuse. Always obtain permission before scanning.
+---
+🤝 Credits
+This pipeline stands on the shoulders of giants. Special thanks to the creators of:
+ProjectDiscovery (Nuclei, Katana, HTTPX)
+Corben Leo (GAU)
+
+Made with ❤️ by Rahul A.K.A SecurityBong
 
