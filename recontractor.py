@@ -88,7 +88,7 @@ def setup_tools():
     pkg_mgr = ""
     if os_id == "Linux" and os.path.exists("/etc/os-release"):
         try:
-            with open("/etc/os-release") as f:
+            with open("/etc/os-release", encoding="utf-8", errors="ignore") as f:
                 content = f.read().lower()
                 if "ubuntu" in content: os_id = "Ubuntu"; pkg_mgr = "sudo apt install golang"
                 elif "kali" in content: os_id = "Kali Linux"; pkg_mgr = "sudo apt install golang"
@@ -153,7 +153,7 @@ def run_tool_with_status(cmd, tool_name, output_file=None):
     outfile = None
     try:
         if output_file:
-            outfile = open(output_file, "a")
+            outfile = open(output_file, "a", encoding="utf-8", errors="ignore")
             stdout_dest = outfile
         else: stdout_dest = subprocess.PIPE
         
@@ -169,7 +169,7 @@ def run_tool_with_status(cmd, tool_name, output_file=None):
                     count = 0
                     if out_f and os.path.exists(out_f):
                         try:
-                            with open(out_f, 'r', errors='ignore') as f: count = sum(1 for _ in f)
+                            with open(out_f, 'r', encoding="utf-8", errors='ignore') as f: count = sum(1 for _ in f)
                         except: pass
                     log(f"{name} is processing... Found {count} items. (Next update in {delay+15}s)", "STATUS")
                     delay += 15
@@ -196,7 +196,7 @@ def native_request(url, payload=None):
 def check_alive_python(urls_file, alive_file):
     log(f"Using Internal Engine ({THREADS} Threads)...", "STATUS")
     try:
-        with open(urls_file, 'r') as f: urls = [l.strip() for l in f if l.strip() and l.startswith("http")]
+        with open(urls_file, 'r', encoding="utf-8", errors="ignore") as f: urls = [l.strip() for l in f if l.strip() and l.startswith("http")]
     except: return 0
     total = len(urls); unique_alive = set(); counter = 0
     def check_url(u):
@@ -211,7 +211,7 @@ def check_alive_python(urls_file, alive_file):
                 sys.stdout.write(f"\r{Colors.YELLOW}[STATUS] Checked {counter} / {total} URLs...{Colors.RESET}"); sys.stdout.flush()
             res = fut.result()
             if res: unique_alive.add(res)
-    with open(alive_file, 'w') as f:
+    with open(alive_file, 'w', encoding="utf-8", errors="ignore") as f:
         for u in unique_alive: f.write(u + "\n")
     return len(unique_alive)
 
@@ -234,9 +234,9 @@ def run_recon(target):
 
     log("Deduplicating fetched URLs...", "INFO")
     if os.path.exists(raw_file) and os.path.getsize(raw_file) > 0:
-        with open(raw_file, 'r') as f: lines = f.readlines()
+        with open(raw_file, 'r', encoding="utf-8", errors="ignore") as f: lines = f.readlines()
         unique = set(l.strip() for l in lines if l.strip() and l.startswith("http"))
-        with open(raw_file, 'w') as f: f.write('\n'.join(unique))
+        with open(raw_file, 'w', encoding="utf-8", errors="ignore") as f: f.write('\n'.join(unique))
         log(f"Unique URLs found: {len(unique)}", "SUCCESS")
     else: 
         log("No URLs found. Check if Katana/Gau are installed correctly.", "ERROR")
@@ -247,7 +247,7 @@ def run_recon(target):
     if CMD_PATHS["httpx"]:
         run_tool_with_status([CMD_PATHS["httpx"], "-l", raw_file, "-mc", "200,301,302,403,401", "-o", alive_file, "-silent"], "Httpx", alive_file)
         if os.path.exists(alive_file):
-            with open(alive_file, 'r') as f: alive_count = sum(1 for _ in f)
+            with open(alive_file, 'r', encoding="utf-8", errors="ignore") as f: alive_count = sum(1 for _ in f)
     
     if alive_count == 0: alive_count = check_alive_python(raw_file, alive_file)
     if alive_count == 0: log("0 Alive endpoints found. Verify target availability.", "ERROR"); sys.exit(0)
@@ -280,7 +280,7 @@ def run_recon(target):
         r"""['"]([0-9A-Za-z\-_=]{8,64})['"]"""
     )
     
-    with open(alive_file, 'r') as f:
+    with open(alive_file, 'r', encoding="utf-8", errors="ignore") as f:
         for url in f:
             u = url.strip()
             if ext_pattern.search(u): log(f"Juicy File Extension: {u}", "CORE")
@@ -289,10 +289,8 @@ def run_recon(target):
     if CMD_PATHS["nuclei"]:
         log(f"{CMD_PATHS['nuclei']} (Scanning - Advanced)", "TOOL")
         try:
-            # Update templates silently before running
             subprocess.run([CMD_PATHS["nuclei"], "-ut"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
-            # REMOVED "-as" so Nuclei runs ALL matched templates, finding everything on test/vulnerable apps
             nuc = subprocess.Popen(
                 [CMD_PATHS["nuclei"], "-l", alive_file, "-s", "low,medium,high,critical", "-no-color", "-silent", "-c", "50"], 
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, universal_newlines=True
